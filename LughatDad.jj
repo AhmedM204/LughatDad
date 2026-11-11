@@ -1,0 +1,500 @@
+options
+{
+  static = false;
+  UNICODE_INPUT = true;
+  GRAMMAR_ENCODING = "UTF-8";
+}
+
+PARSER_BEGIN(LughatDad)
+
+import java.util.*;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+
+public class LughatDad
+{
+  public static HashMap<String, Object> symbolTable = new HashMap<String, Object>();
+
+  public static double parseArabicNumber(String text) {
+    char[] chars = text.toCharArray();
+    for (int i = 0; i < chars.length; i++) {
+      if (chars[i] >= '\u0660' && chars[i] <= '\u0669') {
+        chars[i] = (char) ('0' + (chars[i] - '\u0660'));
+      } else if (chars[i] == '٫') {
+        chars[i] = '.';
+      }
+    }
+    return Double.parseDouble(new String(chars));
+  }
+
+  public static String formatValue(Object val) {
+    if (val == null) return "فارغ";
+    if (val instanceof Double) {
+      double d = (Double) val;
+      if (d == Math.floor(d) && !Double.isInfinite(d)) {
+        return String.valueOf((long) d);
+      }
+      return String.valueOf(d);
+    }
+    if (val instanceof Boolean) {
+      return ((Boolean) val) ? "صح" : "خطأ";
+    }
+    return val.toString();
+  }
+
+  public static double toDouble(Object o) {
+    if (o instanceof Double) return (Double) o;
+    if (o instanceof Number) return ((Number) o).doubleValue();
+    try {
+      return Double.parseDouble(o.toString());
+    } catch (Exception e) {
+      throw new RuntimeException("قيمة غير عددية: " + o);
+    }
+  }
+
+  public static boolean isTruthy(Object o) {
+    if (o instanceof Boolean) return (Boolean) o;
+    if (o instanceof Double) return ((Double) o) != 0.0;
+    return o != null;
+  }
+
+  public interface Stmt {
+    void execute();
+  }
+
+  public interface Expr {
+    Object eval();
+  }
+
+  public static class VarDeclStmt implements Stmt {
+    String name;
+    Expr expr;
+    public VarDeclStmt(String n, Expr e) { name = n; expr = e; }
+    public void execute() {
+      symbolTable.put(name, expr.eval());
+    }
+  }
+
+  public static class AssignStmt implements Stmt {
+    String name;
+    Expr expr;
+    public AssignStmt(String n, Expr e) { name = n; expr = e; }
+    public void execute() {
+      if (!symbolTable.containsKey(name)) {
+        throw new RuntimeException("خطأ: المتغير غير معلن (يجب الإعلان عنه أولاً باستخدام 'متغير'): " + name);
+      }
+      symbolTable.put(name, expr.eval());
+    }
+  }
+
+  public static class PrintStmt implements Stmt {
+    Expr expr;
+    public PrintStmt(Expr e) { expr = e; }
+    public void execute() {
+      Object val = expr.eval();
+      System.out.println(formatValue(val));
+    }
+  }
+
+  public static class IfStmt implements Stmt {
+    Expr condition;
+    List<Stmt> thenBranch;
+    List<Stmt> elseBranch;
+    public IfStmt(Expr c, List<Stmt> t, List<Stmt> e) {
+      condition = c; thenBranch = t; elseBranch = e;
+    }
+    public void execute() {
+      if (isTruthy(condition.eval())) {
+        for (Stmt s : thenBranch) s.execute();
+      } else if (elseBranch != null) {
+        for (Stmt s : elseBranch) s.execute();
+      }
+    }
+  }
+
+  public static class WhileStmt implements Stmt {
+    Expr condition;
+    List<Stmt> body;
+    public WhileStmt(Expr c, List<Stmt> b) { condition = c; body = b; }
+    public void execute() {
+      while (isTruthy(condition.eval())) {
+        for (Stmt s : body) s.execute();
+      }
+    }
+  }
+
+  public static class NumberExpr implements Expr {
+    double val;
+    public NumberExpr(double v) { val = v; }
+    public Object eval() { return val; }
+  }
+
+  public static class StringExpr implements Expr {
+    String val;
+    public StringExpr(String s) { val = s; }
+    public Object eval() { return val; }
+  }
+
+  public static class BoolExpr implements Expr {
+    boolean val;
+    public BoolExpr(boolean b) { val = b; }
+    public Object eval() { return val; }
+  }
+
+  public static class VarExpr implements Expr {
+    String name;
+    public VarExpr(String n) { name = n; }
+    public Object eval() {
+      if (!symbolTable.containsKey(name)) {
+        throw new RuntimeException("خطأ: المتغير غير معرّف: " + name);
+      }
+      return symbolTable.get(name);
+    }
+  }
+
+  public static class UnaryMinusExpr implements Expr {
+    Expr expr;
+    public UnaryMinusExpr(Expr e) { expr = e; }
+    public Object eval() { return -toDouble(expr.eval()); }
+  }
+
+  public static class BinOpExpr implements Expr {
+    Expr left, right;
+    String op;
+    public BinOpExpr(Expr l, String o, Expr r) { left = l; op = o; right = r; }
+    public Object eval() {
+      Object lVal = left.eval();
+      Object rVal = right.eval();
+
+      // دمج النصوص إذا كان أحد الطرفين نصاً
+      if ("+".equals(op) && (lVal instanceof String || rVal instanceof String)) {
+        return formatValue(lVal) + formatValue(rVal);
+      }
+
+      double l = toDouble(lVal);
+      double r = toDouble(rVal);
+      switch (op) {
+        case "+": return l + r;
+        case "-": return l - r;
+        case "*": return l * r;
+        case "/":
+          if (r == 0.0) throw new RuntimeException("خطأ: القسمة على صفر!");
+          return l / r;
+        case "^": return Math.pow(l, r);
+      }
+      return 0.0;
+    }
+  }
+
+  public static class RelOpExpr implements Expr {
+    Expr left, right;
+    String op;
+    public RelOpExpr(Expr l, String o, Expr r) { left = l; op = o; right = r; }
+    public Object eval() {
+      Object lVal = left.eval();
+      Object rVal = right.eval();
+
+      if ("==".equals(op)) {
+        if (lVal instanceof Number && rVal instanceof Number) {
+          return toDouble(lVal) == toDouble(rVal);
+        }
+        return Objects.equals(lVal, rVal);
+      }
+      if ("!=".equals(op)) {
+        if (lVal instanceof Number && rVal instanceof Number) {
+          return toDouble(lVal) != toDouble(rVal);
+        }
+        return !Objects.equals(lVal, rVal);
+      }
+
+      double l = toDouble(lVal);
+      double r = toDouble(rVal);
+      switch (op) {
+        case ">":  return l > r;
+        case "<":  return l < r;
+        case ">=": return l >= r;
+        case "<=": return l <= r;
+      }
+      return false;
+    }
+  }
+
+  public static void main(String args [])
+  {
+    try
+    {
+      symbolTable.clear();
+      LughatDad parser = new LughatDad(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+      parser.program();
+    }
+    catch (ParseException e)
+    {
+      System.out.println("خطأ في القواعد:\n" + e.getMessage());
+    }
+    catch (Exception e)
+    {
+      System.out.println("خطأ:\n" + e.getMessage());
+    }
+  }
+}
+
+PARSER_END(LughatDad)
+
+SKIP :
+{
+  " "
+| "\r"
+| "\t"
+| "\n"
+| "\ufeff"
+| < "//" (~["\r", "\n"])* >
+}
+
+TOKEN :
+{
+  < PLUS      : "+" >
+| < MINUS     : "-" >
+| < MULTIPLY  : "*" >
+| < DIVIDE    : "/" >
+| < POWER     : "^" >
+| < ASSIGN    : "=" >
+| < EQUAL     : "==" >
+| < NOTEQUAL  : "!=" >
+| < GTE       : ">=" >
+| < LTE       : "<=" >
+| < GT        : ">" >
+| < LT        : "<" >
+| < SEMICOLON : ";" | "؛" >
+| < COMMA     : "," | "،" >
+| < LPAREN    : "(" >
+| < RPAREN    : ")" >
+| < LBRACE    : "{" >
+| < RBRACE    : "}" >
+}
+
+TOKEN :
+{
+  < MUTA_GHAYYER : "\u0645\u062a\u063a\u064a\u0631" | "متغير" | "var" >
+| < ITBA3        : "\u0627\u0637\u0628\u0639" | "اطبع" | "print" >
+| < ETHA         : "\u0625\u0630\u0627" | "إذا" | "\u0627\u0630\u0627" | "اذا" | "\u0644\u0648" | "لو" | "if" >
+| < WA_ELLA      : "\u0648\u0625\u0644\u0627" | "وإلا" | "\u0648\u0627\u0644\u0627" | "والا" | "else" >
+| < BAYNAMA      : "\u0628\u064a\u0646\u0645\u0627" | "بينما" | "\u0637\u0627\u0644\u0645\u0627" | "طالما" | "\u0643\u0631\u0631" | "كرر" | "while" >
+| < SAH          : "\u0635\u062d" | "صح" | "true" >
+| < KHATA        : "\u062e\u0637\u0623" | "خطأ" | "\u062e\u0637\u0627" | "خطا" | "false" >
+}
+
+TOKEN :
+{
+  < NUMBER     : ([ "0"-"9", "\u0660"-"\u0669" ])+ (("." | "٫") ([ "0"-"9", "\u0660"-"\u0669" ])+)? >
+| < STRING     : "\"" (~["\"", "\\", "\r", "\n"] | "\\\"" | "\\\\" | "\\n")* "\"" >
+| < IDENTIFIER : <ARABIC_LETTER> (<ARABIC_LETTER> | <DIGIT> | "_")* >
+| < #ARABIC_LETTER : [ "a"-"z", "A"-"Z", "\u0600"-"\u06FF" ] >
+| < #DIGIT         : [ "0"-"9", "\u0660"-"\u0669" ] >
+}
+
+
+void program() :
+{
+  List<Stmt> stmts = new ArrayList<Stmt>();
+  Stmt s;
+}
+{
+  ( s = statement() { if (s != null) stmts.add(s); } )* <EOF>
+  {
+    for (Stmt stmt : stmts) {
+      stmt.execute();
+    }
+  }
+}
+
+Stmt statement() :
+{
+  Stmt s;
+}
+{
+  s = declaration()     { return s; }
+| s = assignment()      { return s; }
+| s = printStmt()       { return s; }
+| s = ifStmt()          { return s; }
+| s = whileStmt()       { return s; }
+| <SEMICOLON>           { return null; }
+}
+
+Stmt declaration() :
+{
+  Token t;
+  Expr e;
+}
+{
+  <MUTA_GHAYYER> t = <IDENTIFIER> <ASSIGN> e = expression() <SEMICOLON>
+  {
+    return new VarDeclStmt(t.image, e);
+  }
+}
+
+Stmt assignment() :
+{
+  Token t;
+  Expr e;
+}
+{
+  t = <IDENTIFIER> <ASSIGN> e = expression() <SEMICOLON>
+  {
+    return new AssignStmt(t.image, e);
+  }
+}
+
+Stmt printStmt() :
+{
+  Expr e;
+}
+{
+  <ITBA3> <LPAREN> e = expression() <RPAREN> <SEMICOLON>
+  {
+    return new PrintStmt(e);
+  }
+}
+
+Stmt ifStmt() :
+{
+  Expr cond;
+  List<Stmt> thenB;
+  List<Stmt> elseB = null;
+}
+{
+  <ETHA> <LPAREN> cond = condition() <RPAREN> thenB = block()
+  [
+    LOOKAHEAD(1)
+    <WA_ELLA> elseB = block()
+  ]
+  {
+    return new IfStmt(cond, thenB, elseB);
+  }
+}
+
+Stmt whileStmt() :
+{
+  Expr cond;
+  List<Stmt> b;
+}
+{
+  <BAYNAMA> <LPAREN> cond = condition() <RPAREN> b = block()
+  {
+    return new WhileStmt(cond, b);
+  }
+}
+
+List<Stmt> block() :
+{
+  List<Stmt> list = new ArrayList<Stmt>();
+  Stmt s;
+}
+{
+  <LBRACE>
+  (
+    s = statement() { if (s != null) list.add(s); }
+  )*
+  <RBRACE>
+  {
+    return list;
+  }
+}
+
+Expr condition() :
+{
+  Expr left, right;
+  Token op = null;
+}
+{
+  left = expression()
+  [
+    ( op = <EQUAL> | op = <NOTEQUAL> | op = <GTE> | op = <LTE> | op = <GT> | op = <LT> )
+    right = expression()
+    {
+      left = new RelOpExpr(left, op.image, right);
+    }
+  ]
+  {
+    return left;
+  }
+}
+
+Expr expression() :
+{
+  Expr left, right;
+  Token op;
+}
+{
+  left = term()
+  (
+    ( op = <PLUS> | op = <MINUS> )
+    right = term()
+    {
+      left = new BinOpExpr(left, op.image, right);
+    }
+  )*
+  {
+    return left;
+  }
+}
+
+Expr term() :
+{
+  Expr left, right;
+  Token op;
+}
+{
+  left = unary()
+  (
+    ( op = <MULTIPLY> | op = <DIVIDE> | op = <POWER> )
+    right = unary()
+    {
+      left = new BinOpExpr(left, op.image, right);
+    }
+  )*
+  {
+    return left;
+  }
+}
+
+Expr unary() :
+{
+  Expr e;
+}
+{
+  <MINUS> e = primary() { return new UnaryMinusExpr(e); }
+| e = primary()         { return e; }
+}
+
+Expr primary() :
+{
+  Token t;
+  Expr e;
+}
+{
+  t = <NUMBER>
+  {
+    return new NumberExpr(parseArabicNumber(t.image));
+  }
+| t = <STRING>
+  {
+    String s = t.image.substring(1, t.image.length() - 1);
+    return new StringExpr(s);
+  }
+| <SAH>
+  {
+    return new BoolExpr(true);
+  }
+| <KHATA>
+  {
+    return new BoolExpr(false);
+  }
+| t = <IDENTIFIER>
+  {
+    return new VarExpr(t.image);
+  }
+| <LPAREN> e = expression() <RPAREN>
+  {
+    return e;
+  }
+}
